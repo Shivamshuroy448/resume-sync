@@ -1150,6 +1150,14 @@ function fetchExistingFolders() {
   renderTargetCompanies();
 }
 
+// Ping bridge to check if it's running
+async function isBridgeRunning() {
+  try {
+    const r = await fetch("http://127.0.0.1:4567/", { method: "GET", signal: AbortSignal.timeout(800) });
+    return r.ok;
+  } catch (_) { return false; }
+}
+
 // Function to trigger 1-click sync to Overleaf
 async function pushToOverleaf(keepCurrentActiveResume = false) {
   const jdInput = document.getElementById("jd-input");
@@ -1162,7 +1170,7 @@ async function pushToOverleaf(keepCurrentActiveResume = false) {
   const companyInput = document.getElementById("company-input");
   const companyName = (companyInput ? companyInput.value.trim() : "") || "General";
 
-  // 1. Sync skills only if not already tailored by AI
+  // 1. Sync skills if not already done
   if (!keepCurrentActiveResume) {
     activeResume = syncAndOptimizeResume(currentJDAnalysis ? currentJDAnalysis.missing : [], jdText);
     updateUI();
@@ -1170,106 +1178,91 @@ async function pushToOverleaf(keepCurrentActiveResume = false) {
 
   const fullLatex = generateLaTeX(activeResume);
 
-  // 2. Always copy full LaTeX to clipboard immediately
+  // 2. Copy LaTeX to clipboard (always — reliable fallback)
   let clipboardCopied = false;
-  if (navigator && navigator.clipboard && navigator.clipboard.writeText) {
-    try {
-      await navigator.clipboard.writeText(fullLatex);
-      clipboardCopied = true;
-    } catch (clipErr) {
-      console.warn("Clipboard copy skipped/blocked:", clipErr);
-    }
-  }
-
-  // Fallback copy using hidden textarea if navigator.clipboard failed
-  if (!clipboardCopied) {
+  try {
+    await navigator.clipboard.writeText(fullLatex);
+    clipboardCopied = true;
+  } catch (_) {
     try {
       const ta = document.createElement("textarea");
-      ta.value = fullLatex;
-      ta.style.position = "fixed";
-      ta.style.opacity = "0";
-      document.body.appendChild(ta);
-      ta.select();
-      document.execCommand("copy");
-      ta.remove();
+      ta.value = fullLatex; ta.style.cssText = "position:fixed;opacity:0";
+      document.body.appendChild(ta); ta.select();
+      document.execCommand("copy"); ta.remove();
       clipboardCopied = true;
-    } catch (e) {}
+    } catch (_) {}
   }
 
-  // 3. IMMEDIATELY open Overleaf in the user click context (avoids popup blockers)
-  //    The extension will also focus/create a tab, but this guarantees it opens.
-  const overleafUrl = "https://www.overleaf.com/project/69787f4c07ea46326eb8587e";
-  const overleafWindow = window.open(overleafUrl, "overleaf_sync_tab");
-
-  // 4. Send message to Chrome Extension with ACK handshake
-  let extensionConnected = false;
-  let extensionHandled = false;
-
-  const extPromise = new Promise((resolve) => {
-    const handler = (e) => {
-      if (!e.data) return;
-      if (e.data.type === "RESUMESYNC_ACK") {
-        extensionConnected = true;
-      }
-      if (e.data.type === "RESUMESYNC_RESULT") {
-        window.removeEventListener("message", handler);
-        resolve(e.data.result?.success || false);
-      }
-    };
-    window.addEventListener("message", handler);
-    window.postMessage({ type: "RESUMESYNC_TO_OVERLEAF", latex: fullLatex }, "*");
-
-    // Check if extension acknowledged within 3000ms.
-    setTimeout(() => {
-      if (!extensionConnected) {
-        window.removeEventListener("message", handler);
-        resolve(false);
-      }
-    }, 3000);
-
-    // Hard timeout for extension injection
-    setTimeout(() => {
-      window.removeEventListener("message", handler);
-      resolve(false);
-    }, 12000);
-  });
-
-  extensionHandled = await extPromise;
-
-  // 5. Show appropriate feedback
-  if (extensionHandled) {
-    showToastFeedback(
-      `✓ <strong>LaTeX Code Injected & Recompiled in Overleaf!</strong><br>` +
-      `Check your Overleaf tab to preview the compiled PDF.`,
-      6000
-    );
-  } else {
-    showToastFeedback(
-      `📋 <strong>Tailored LaTeX Copied to Clipboard!</strong><br>` +
-      `Overleaf tab opened — Press <strong>Cmd+A</strong> then <strong>Cmd+V</strong> to paste, then click <strong>Recompile</strong>.`,
-      8000
-    );
-  }
-
-  // 6. Update Button Feedback
+  // 3. Update sync button to "Syncing..."
   const btnMain = document.getElementById("btn-sync-overleaf-main");
   const btnTop = document.getElementById("btn-sync-overleaf-top");
+  const origMain = btnMain ? btnMain.innerHTML : "";
+  const origTop = btnTop ? btnTop.innerHTML : "";
+  if (btnMain) btnMain.innerHTML = `<span class="sync-icon">⏳</span><span>Syncing to Overleaf...</span>`;
+  if (btnTop) btnTop.innerHTML = `<span>⏳</span><span>Syncing...</span>`;
 
-  const successMsg = extensionHandled
-    ? "✓ Injected & Recompiled in Overleaf!"
-    : "✓ LaTeX Copied! Overleaf Opened";
+  let synced = false;
+  let method = "clipboard";
 
-  if (btnMain) {
-    const orig = btnMain.innerHTML;
-    btnMain.innerHTML = `<span class="sync-icon">✓</span><span>${successMsg}</span>`;
-    setTimeout(() => { btnMain.innerHTML = orig; }, 4000);
+  // 4. PRIMARY: Try local bridge (localhost:4567/sync)
+  if (await isBridgeRunning()) {
+    try {
+      const resp = await fetch("http://127.0.0.1:4567/sync", {
+        method: "POST",
+        headers: { "Content-Type": "text/plain", "X-Company-Name": companyName },
+        body: fullLatex,
+        signal: AbortSignal.timeout(18000)
+      });
+      const data = await resp.json();
+      if (data.success) {
+        synced = true; method = "bridge";
+        const saved = data.downloaded ? `<br>📂 PDF saved to <code>Desktop/resumes/${companyName}/</code>` : "";
+        showToastFeedback(
+          `✓ <strong>Synced to Overleaf & Recompiled!</strong>${saved}<br>` +
+          `LaTeX also copied to clipboard.`, 6000
+        );
+      }
+    } catch (e) { console.warn("Bridge sync failed:", e); }
   }
 
-  if (btnTop) {
-    const orig = btnTop.innerHTML;
-    btnTop.innerHTML = `<span>✓</span><span>${successMsg}</span>`;
-    setTimeout(() => { btnTop.innerHTML = orig; }, 4000);
+  // 5. SECONDARY: Try Chrome Extension relay
+  if (!synced) {
+    const extResult = await new Promise((resolve) => {
+      let ackd = false;
+      const handler = (e) => {
+        if (!e.data) return;
+        if (e.data.type === "RESUMESYNC_ACK") ackd = true;
+        if (e.data.type === "RESUMESYNC_RESULT") {
+          window.removeEventListener("message", handler);
+          resolve(e.data.result?.success || false);
+        }
+      };
+      window.addEventListener("message", handler);
+      window.postMessage({ type: "RESUMESYNC_TO_OVERLEAF", latex: fullLatex }, "*");
+      setTimeout(() => { if (!ackd) { window.removeEventListener("message", handler); resolve(false); } }, 3000);
+      setTimeout(() => { window.removeEventListener("message", handler); resolve(false); }, 12000);
+    });
+    if (extResult) { synced = true; method = "extension"; }
   }
+
+  // 6. TERTIARY: Open Overleaf + clipboard fallback (always open Overleaf so user can paste)
+  window.open("https://www.overleaf.com/project/69787f4c07ea46326eb8587e", "overleaf_sync_tab");
+
+  if (!synced) {
+    showToastFeedback(
+      `📋 <strong>LaTeX Copied to Clipboard!</strong><br>` +
+      `Overleaf tab opened — Press <strong>Cmd+A</strong> then <strong>Cmd+V</strong> to paste, then click <strong>Recompile</strong>.<br>` +
+      `<em>Tip: Keep the bridge running for auto-sync.</em>`, 9000
+    );
+    method = "clipboard";
+  } else if (method === "extension") {
+    showToastFeedback(`✓ <strong>Injected & Recompiled via Extension!</strong>`, 5000);
+  }
+
+  // 7. Reset button
+  const successMsg = synced ? (method === "bridge" ? "✓ Synced & Saved PDF!" : "✓ Injected & Recompiled!") : "✓ LaTeX Copied — Paste in Overleaf";
+  if (btnMain) { btnMain.innerHTML = `<span class="sync-icon">✓</span><span>${successMsg}</span>`; setTimeout(() => { btnMain.innerHTML = origMain; }, 4500); }
+  if (btnTop) { btnTop.innerHTML = `<span>✓</span><span>${successMsg}</span>`; setTimeout(() => { btnTop.innerHTML = origTop; }, 4500); }
 
   saveTargetCompany(companyName);
 }
@@ -1284,6 +1277,7 @@ async function downloadResumePDF() {
     if (btnTop) btnTop.innerHTML = html;
   };
 
+
   const origMain = btnMain ? btnMain.innerHTML : "";
   const origTop = btnTop ? btnTop.innerHTML : "";
 
@@ -1292,51 +1286,70 @@ async function downloadResumePDF() {
   const companyInput = document.getElementById("company-input");
   const companyName = (companyInput ? companyInput.value.trim() : "") || "General";
 
-  // 0. Make sure we have latest tailored LaTeX on clipboard for manual paste fallback
   const fullLatex = generateLaTeX(activeResume);
-  try {
-    await navigator.clipboard.writeText(fullLatex);
-  } catch (e) {}
+  // Always copy to clipboard
+  try { await navigator.clipboard.writeText(fullLatex); } catch (_) {}
 
-  // 1. IMMEDIATELY open Overleaf in user click context (avoids popup blockers)
-  const overleafUrl = "https://www.overleaf.com/project/69787f4c07ea46326eb8587e";
-  const overleafWindow = window.open(overleafUrl, "overleaf_sync_tab");
+  let downloaded = false;
 
-  // 2. Listen for extension download confirmation
-  let handledByExtension = false;
-  const downloadPromise = new Promise((resolve) => {
-    const downloadHandler = (e) => {
-      if (e.data && e.data.type === "RESUMESYNC_DOWNLOAD_RESULT") {
-        handledByExtension = true;
-        window.removeEventListener("message", downloadHandler);
-        resolve(true);
+  // PRIMARY: Try local bridge /sync (injects, recompiles, downloads, saves to Desktop/resumes/)
+  if (await isBridgeRunning()) {
+    try {
+      setBtnText(`<span>⏳</span><span>Syncing & Downloading via Bridge...</span>`);
+      const resp = await fetch("http://127.0.0.1:4567/sync", {
+        method: "POST",
+        headers: { "Content-Type": "text/plain", "X-Company-Name": companyName },
+        body: fullLatex,
+        signal: AbortSignal.timeout(20000)
+      });
+      const data = await resp.json();
+      if (data.success && data.downloaded) {
+        downloaded = true;
+        showToastFeedback(
+          `📥 <strong>PDF Downloaded & Saved!</strong><br>` +
+          `Saved to <code>Desktop/resumes/${companyName}/</code>`, 6000
+        );
+        setBtnText(`<span>✓</span><span>PDF Downloaded & Saved!</span>`);
+      } else if (data.success) {
+        // Bridge worked but download timed out — open Overleaf for manual download
+        window.open("https://www.overleaf.com/project/69787f4c07ea46326eb8587e", "overleaf_sync_tab");
+        showToastFeedback(
+          `✓ <strong>LaTeX Injected & Recompiled!</strong><br>` +
+          `Click the <strong>Download PDF</strong> button in Overleaf.`, 7000
+        );
+        setBtnText(`<span>✓</span><span>Injected — Click Download in Overleaf</span>`);
+        downloaded = true; // partial success
       }
-    };
-    window.addEventListener("message", downloadHandler);
+    } catch (e) { console.warn("Bridge download failed:", e); }
+  }
 
-    // Trigger Overleaf PDF download via extension relay
-    window.postMessage({ type: "RESUMESYNC_DOWNLOAD_PDF" }, "*");
+  // SECONDARY: Extension PDF download
+  if (!downloaded) {
+    window.open("https://www.overleaf.com/project/69787f4c07ea46326eb8587e", "overleaf_sync_tab");
+    const extHandled = await new Promise((resolve) => {
+      const h = (e) => {
+        if (e.data && e.data.type === "RESUMESYNC_DOWNLOAD_RESULT") {
+          window.removeEventListener("message", h); resolve(true);
+        }
+      };
+      window.addEventListener("message", h);
+      window.postMessage({ type: "RESUMESYNC_DOWNLOAD_PDF" }, "*");
+      setTimeout(() => { window.removeEventListener("message", h); resolve(false); }, 5000);
+    });
+    if (extHandled) {
+      downloaded = true;
+      showToastFeedback(`📥 <strong>Downloading PDF from Overleaf!</strong>`, 5000);
+      setBtnText(`<span>✓</span><span>PDF Downloaded!</span>`);
+    }
+  }
 
-    // Timeout fallback
-    setTimeout(() => {
-      window.removeEventListener("message", downloadHandler);
-      resolve(false);
-    }, 5000);
-  });
-
-  handledByExtension = await downloadPromise;
-
-  // 3. Show feedback
-  if (handledByExtension) {
-    showToastFeedback(`📥 <strong>Downloading PDF from Overleaf!</strong><br>Check your Downloads folder for <code>roy.pdf</code>.`);
-    setBtnText(`<span>✓</span><span>PDF Downloaded!</span>`);
-  } else {
-    // Also download .tex file as a reliable fallback
+  // FALLBACK: Download .tex file + instructions
+  if (!downloaded) {
     downloadTexFile();
     showToastFeedback(
       `📄 <strong>Overleaf opened + .tex file downloaded!</strong><br>` +
-      `In Overleaf: Paste <strong>Cmd+A → Cmd+V</strong>, click <strong>Recompile</strong>, then click the <strong>Download PDF</strong> button.`,
-      8000
+      `In Overleaf: Press <strong>Cmd+A → Cmd+V</strong>, click <strong>Recompile</strong>, then click <strong>Download PDF</strong>.<br>` +
+      `<em>Tip: Run the bridge server for full auto-download.</em>`, 9000
     );
     setBtnText(`<span>📥</span><span>Overleaf Opened + .tex Downloaded</span>`);
   }
@@ -1344,7 +1357,7 @@ async function downloadResumePDF() {
   setTimeout(() => {
     if (btnMain) btnMain.innerHTML = origMain;
     if (btnTop) btnTop.innerHTML = origTop;
-  }, 4000);
+  }, 4500);
 
   saveTargetCompany(companyName);
 }

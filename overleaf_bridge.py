@@ -24,63 +24,69 @@ DESKTOP_RESUMES_DIR = os.path.expanduser("~/Desktop/resumes")
 
 os.makedirs(DESKTOP_RESUMES_DIR, exist_ok=True)
 
-APPLESCRIPT_SYNC_AND_RECOMPILE = """
-tell application "Google Chrome"
+def inject_latex_and_recompile(latex_code):
+    """Inject LaTeX into Overleaf via direct JS (no Accessibility permission needed)"""
+    import json as _json
+    latex_escaped = _json.dumps(latex_code)
+    inject_js = f"""(function() {{
+  var cm = document.querySelector('.cm-content');
+  if (!cm) return 'NO_CM';
+  cm.focus();
+  var sel = window.getSelection();
+  var range = document.createRange();
+  range.selectNodeContents(cm);
+  sel.removeAllRanges();
+  sel.addRange(range);
+  var ok = document.execCommand('insertText', false, {latex_escaped});
+  setTimeout(function() {{
+    var btn = document.querySelector('button.compile-button');
+    if (btn) btn.click();
+  }}, 400);
+  return ok ? 'OK' : 'FAILED';
+}})()"""
+    script = f"""tell application "Google Chrome"
   activate
   set found to false
   repeat with aWindow in every window
-    set tabIndex to 0
+    set tabIdx to 0
     repeat with aTab in every tab of aWindow
-      set tabIndex to tabIndex + 1
-      if URL of aTab contains "overleaf.com/project" then
-        set active tab index of aWindow to tabIndex
+      set tabIdx to tabIdx + 1
+      if URL of aTab contains "overleaf.com/project/69787f4c07ea46326eb8587e" then
+        set active tab index of aWindow to tabIdx
         set index of aWindow to 1
+        delay 0.3
+        execute aTab javascript {_json.dumps(inject_js)}
         set found to true
         exit repeat
       end if
     end repeat
     if found then exit repeat
   end repeat
-  
   if not found then
     tell front window
-      make new tab with properties {URL:"https://www.overleaf.com/project/69787f4c07ea46326eb8587e"}
+      make new tab with properties {{URL:"https://www.overleaf.com/project/69787f4c07ea46326eb8587e"}}
     end tell
-    delay 1.8
+    delay 3.5
+    execute active tab of front window javascript {_json.dumps(inject_js)}
   end if
-end tell
+end tell"""
+    subprocess.run(["osascript", "-e", script], check=True)
 
-delay 0.35
 
-tell application "System Events"
-  tell process "Google Chrome"
-    keystroke "a" using command down
-    delay 0.15
-    keystroke "v" using command down
-    delay 0.4
-    keystroke return using command down
-  end tell
-end tell
-"""
-
-APPLESCRIPT_TRIGGER_DOWNLOAD = """
-tell application "Google Chrome"
-  set windowList to every window
-  repeat with aWindow in windowList
+def trigger_overleaf_download():
+    """Click Download PDF in Overleaf tab via JS"""
+    script = """tell application "Google Chrome"
+  repeat with aWindow in every window
     repeat with aTab in every tab of aWindow
-      if URL of aTab contains "overleaf.com/project" then
-        tell aTab
-          execute javascript "(function() {
-            var dl = document.querySelector('a[aria-label=\\\"Download PDF\\\"]');
-            if (dl) dl.click();
-          })()"
-        end tell
+      if URL of aTab contains "overleaf.com/project/69787f4c07ea46326eb8587e" then
+        execute aTab javascript "(function() { var dl = document.querySelector('a[aria-label=\\"Download PDF\\"]'); if (dl) { dl.click(); return 'CLICKED'; } return 'NO_DL'; })()"
         exit repeat
       end if
     end repeat
   end repeat
-end tell
-"""
+end tell"""
+    subprocess.run(["osascript", "-e", script], check=True)
+
 
 def notify_macos(title, message):
     try:
@@ -340,15 +346,15 @@ class OverleafSyncHandler(http.server.BaseHTTPRequestHandler):
                     proc = subprocess.Popen(["pbcopy"], stdin=subprocess.PIPE)
                     proc.communicate(body.encode("utf-8"))
 
-                    # Switch to Overleaf, paste, and trigger recompile
-                    subprocess.run(["osascript", "-e", APPLESCRIPT_SYNC_AND_RECOMPILE], check=True)
-                    
-                    # Wait 2.8s for Overleaf to finish recompilation
-                    time.sleep(2.8)
+                    # Inject LaTeX into Overleaf and recompile using JS injection (no Accessibility needed)
+                    inject_latex_and_recompile(body)
 
-                # 2. Trigger download
+                    # Wait 3s for Overleaf to finish recompilation
+                    time.sleep(3)
+
+                # 2. Trigger download via JS injection
                 initial_pdfs = get_downloads_pdf_set()
-                subprocess.run(["osascript", "-e", APPLESCRIPT_TRIGGER_DOWNLOAD], check=True)
+                trigger_overleaf_download()
 
                 # 3. Wait for downloaded PDF and move to Desktop/resumes/<company>/
                 downloaded_file = wait_for_downloaded_pdf(initial_pdfs, timeout_sec=8)
