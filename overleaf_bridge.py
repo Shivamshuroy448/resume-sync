@@ -74,12 +74,12 @@ end tell"""
 
 
 def trigger_overleaf_download():
-    """Click Download PDF in Overleaf tab via JS"""
+    """Trigger PDF download in Overleaf tab via navigation to download URL (guaranteed Chrome download)"""
     script = """tell application "Google Chrome"
   repeat with aWindow in every window
     repeat with aTab in every tab of aWindow
       if URL of aTab contains "overleaf.com/project/69787f4c07ea46326eb8587e" then
-        execute aTab javascript "(function() { var dl = document.querySelector('a[aria-label=\\"Download PDF\\"]'); if (dl) { dl.click(); return 'CLICKED'; } return 'NO_DL'; })()"
+        execute aTab javascript "(function() { var dl = document.querySelector('a[aria-label=\\"Download PDF\\"]'); if (dl) { window.location.href = dl.href; return 'NAVIGATED'; } return 'NO_DL'; })()"
         exit repeat
       end if
     end repeat

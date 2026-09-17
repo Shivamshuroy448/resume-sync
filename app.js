@@ -971,6 +971,121 @@ function updateUI() {
   if (latexOutput) {
     latexOutput.value = generateLaTeX(activeResume);
   }
+
+  // Render live visual skills preview in the right panel
+  renderSkillsPreview(activeResume, jdText);
+}
+
+// Render interactive visual tailored skills categories & chips
+function renderSkillsPreview(res, jdText) {
+  const container = document.getElementById("skills-categories-list");
+  if (!container) return;
+
+  const lowerJD = (jdText || "").toLowerCase();
+  const companyInput = document.getElementById("company-input");
+  const companyName = (companyInput ? companyInput.value.trim() : "") || "Target Role";
+
+  const subtitle = document.getElementById("skills-target-subtitle");
+  if (subtitle) {
+    const scoreText = (currentJDAnalysis && currentJDAnalysis.score) ? ` • ${currentJDAnalysis.score}% ATS Match` : "";
+    subtitle.textContent = `Optimized for ${companyName}${scoreText} (Linear ATS-Proof Format)`;
+  }
+
+  const tabCount = document.getElementById("tab-skills-count");
+  if (tabCount) {
+    tabCount.textContent = `${(res.skills || []).length} Categories`;
+  }
+
+  const categoryIcons = {
+    "Languages": "💻",
+    "ML & Deep Learning": "🤖",
+    "Machine Learning & AI": "🤖",
+    "AI & Deep Learning": "🤖",
+    "Data & Cloud": "☁️",
+    "Data, Cloud & Infrastructure": "☁️",
+    "Analytics & Tools": "📊",
+    "Relevant Coursework": "🎓",
+    "Coursework": "🎓",
+    "Core Competencies": "🌟"
+  };
+
+  container.innerHTML = (res.skills || []).map(cat => {
+    const icon = categoryIcons[cat.label] || "⚡";
+    const items = (cat.value || "").split(",").map(s => s.trim()).filter(Boolean);
+
+    const pillsHtml = items.map(item => {
+      const lcItem = item.toLowerCase();
+      // Check if item is specifically mentioned in JD or was prioritized
+      const isMatched = lowerJD && (
+        lowerJD.includes(lcItem) ||
+        (item === "SQL" && /\bsql\b/i.test(lowerJD)) ||
+        (item === "NLP" && /\bnlp\b/i.test(lowerJD)) ||
+        (item === "LLMs" && /\bllm\b/i.test(lowerJD)) ||
+        (item === "R" && /\b(r|r programming)\b/i.test(lowerJD)) ||
+        (item === "Python" && lowerJD.includes("python")) ||
+        (item === "PyTorch" && lowerJD.includes("pytorch")) ||
+        (item === "TensorFlow" && lowerJD.includes("tensorflow")) ||
+        (item === "FastAPI" && lowerJD.includes("fastapi")) ||
+        (item === "Docker" && lowerJD.includes("docker")) ||
+        (item === "Tableau" && lowerJD.includes("tableau")) ||
+        (item === "Power BI" && lowerJD.includes("power bi"))
+      );
+
+      const isExtra = lowerJD && (
+        (item.includes("Hugging Face") && (lowerJD.includes("hugging face") || lowerJD.includes("transformers"))) ||
+        (item === "OpenCV" && lowerJD.includes("opencv")) ||
+        (item === "spaCy" && lowerJD.includes("spacy")) ||
+        (item === "NLTK" && lowerJD.includes("nltk")) ||
+        (item.includes("Pandas") && lowerJD.includes("pandas")) ||
+        (item === "AWS" && lowerJD.includes("aws")) ||
+        (item === "GCP" && lowerJD.includes("gcp")) ||
+        (item === "Azure" && lowerJD.includes("azure")) ||
+        (item === "Snowflake" && lowerJD.includes("snowflake")) ||
+        (item.includes("Spark") && lowerJD.includes("spark")) ||
+        (item.includes("Kafka") && lowerJD.includes("kafka")) ||
+        (item.includes("Airflow") && lowerJD.includes("airflow")) ||
+        (item === "dbt" && lowerJD.includes("dbt")) ||
+        (item === "Redis" && lowerJD.includes("redis")) ||
+        (item === "MongoDB" && lowerJD.includes("mongodb")) ||
+        (item === "Kubernetes" && lowerJD.includes("kubernetes")) ||
+        (item === "REST APIs" && (lowerJD.includes("rest api") || lowerJD.includes("restful"))) ||
+        (item === "Statistical Methods" && (lowerJD.includes("statistical methods") || lowerJD.includes("statistical"))) ||
+        (item === "Data Analysis Techniques" && lowerJD.includes("data analysis")) ||
+        (item === "Data Visualization" && lowerJD.includes("visualization")) ||
+        (item.includes("HIPAA") && lowerJD.includes("hipaa")) ||
+        (item.includes("Harmonization") && lowerJD.includes("harmonization")) ||
+        (item.includes("Imputation") && (lowerJD.includes("imputation") || lowerJD.includes("hygiene"))) ||
+        (cat.label === "Core Competencies")
+      );
+
+      let badgeClass = "skill-pill";
+      let icon = "";
+      if (isExtra) {
+        badgeClass = "skill-pill extra";
+        icon = `<span style="color:#38bdf8;">✦</span>`;
+      } else if (isMatched) {
+        badgeClass = "skill-pill highlight";
+        icon = `<span style="color:#34d399;">✓</span>`;
+      }
+
+      return `<span class="${badgeClass}">${icon}<span>${item}</span></span>`;
+    }).join("");
+
+    return `
+      <div class="skill-category-card">
+        <div class="skill-category-header">
+          <div class="skill-category-title-wrap">
+            <span class="skill-category-icon">${icon}</span>
+            <span class="skill-category-title">${cat.label}</span>
+          </div>
+          <span class="skill-count-tag">${items.length} skills</span>
+        </div>
+        <div class="skill-pills-wrap">
+          ${pillsHtml}
+        </div>
+      </div>
+    `;
+  }).join("");
 }
 
 const POPULAR_COMPANIES = [
@@ -1153,9 +1268,28 @@ function fetchExistingFolders() {
 // Ping bridge to check if it's running
 async function isBridgeRunning() {
   try {
-    const r = await fetch("http://127.0.0.1:4567/", { method: "GET", signal: AbortSignal.timeout(800) });
-    return r.ok;
-  } catch (_) { return false; }
+    const r = await fetch("http://127.0.0.1:4567/", { method: "GET", signal: AbortSignal.timeout(1200) });
+    const ok = r.ok;
+    const pill = document.getElementById("overleaf-status-pill");
+    if (pill) {
+      if (ok) {
+        pill.textContent = "⚡ Bridge Active (Auto-Sync & PDF Download)";
+        pill.className = "status-pill ready";
+        pill.title = "Local bridge daemon is active on port 4567. 1-click syncs to Overleaf and auto-saves PDF to Desktop/resumes/.";
+      } else {
+        pill.textContent = "⚡ Overleaf Web Ready";
+        pill.className = "status-pill";
+      }
+    }
+    return ok;
+  } catch (_) {
+    const pill = document.getElementById("overleaf-status-pill");
+    if (pill) {
+      pill.textContent = "⚡ Overleaf Web Ready";
+      pill.className = "status-pill";
+    }
+    return false;
+  }
 }
 
 // Function to trigger 1-click sync to Overleaf
@@ -1588,13 +1722,40 @@ document.addEventListener("DOMContentLoaded", () => {
   });
 
 
-  // Direct Browser & Extension Status (Zero Daemons)
-  const pill = document.getElementById("overleaf-status-pill");
-  if (pill) {
-    pill.className = "status-pill ready";
-    pill.innerHTML = `⚡ Overleaf Sync Ready`;
-    pill.title = "Direct browser & extension sync ready. No background daemons needed.";
+  // View Toggle Tabs (Tailored Skills vs Full LaTeX Code)
+  const tabBtnSkills = document.getElementById("tab-btn-skills");
+  const tabBtnLatex = document.getElementById("tab-btn-latex");
+  const viewSkills = document.getElementById("view-skills");
+  const viewLatex = document.getElementById("view-latex");
+
+  if (tabBtnSkills && tabBtnLatex) {
+    tabBtnSkills.addEventListener("click", () => {
+      tabBtnSkills.classList.add("active");
+      tabBtnLatex.classList.remove("active");
+      if (viewSkills) viewSkills.style.display = "flex";
+      if (viewLatex) viewLatex.style.display = "none";
+    });
+    tabBtnLatex.addEventListener("click", () => {
+      tabBtnLatex.classList.add("active");
+      tabBtnSkills.classList.remove("active");
+      if (viewSkills) viewSkills.style.display = "none";
+      if (viewLatex) viewLatex.style.display = "flex";
+    });
   }
+
+  const btnCopySkillsCard = document.getElementById("btn-copy-skills-card");
+  if (btnCopySkillsCard) {
+    btnCopySkillsCard.addEventListener("click", () => {
+      const skillsLatex = generateSkillsSectionLaTeX(activeResume);
+      navigator.clipboard.writeText(skillsLatex).then(() => {
+        showToastFeedback("📋 <strong>Tailored Skills Block Copied!</strong> Ready to paste into Overleaf.");
+      });
+    });
+  }
+
+  // Check bridge health immediately and every 5 seconds
+  isBridgeRunning();
+  setInterval(isBridgeRunning, 5000);
 
   // Initial load
   activeResume = JSON.parse(JSON.stringify(EXACT_BASE_RESUME));
