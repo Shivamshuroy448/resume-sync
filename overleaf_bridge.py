@@ -316,48 +316,58 @@ class OverleafSyncHandler(http.server.BaseHTTPRequestHandler):
             return
 
         if self.path in ["/sync", "/download"]:
-            content_length = int(self.headers.get("Content-Length", 0))
-            body = self.rfile.read(content_length).decode("utf-8") if content_length > 0 else ""
-            
-            raw_company = self.headers.get("X-Company-Name", "").strip()
-            if not raw_company:
-                # Try query param if any
-                if "?" in self.path:
+            try:
+                content_length = int(self.headers.get("Content-Length", 0))
+                body = self.rfile.read(content_length).decode("utf-8") if content_length > 0 else ""
+                
+                raw_company = self.headers.get("X-Company-Name", "").strip()
+                if not raw_company and "?" in self.path:
                     import urllib.parse
                     qs = urllib.parse.parse_qs(self.path.split("?", 1)[1])
                     raw_company = qs.get("company", [""])[0]
 
-            target_company = sanitize_company_name(raw_company or CURRENT_TARGET_COMPANY)
-            CURRENT_TARGET_COMPANY = target_company
-            company_dir = os.path.join(DESKTOP_RESUMES_DIR, target_company)
-            os.makedirs(company_dir, exist_ok=True)
+                target_company = sanitize_company_name(raw_company or CURRENT_TARGET_COMPANY)
+                CURRENT_TARGET_COMPANY = target_company
 
-            try:
+                company_dir = os.path.join(DESKTOP_RESUMES_DIR, target_company)
+                try:
+                    os.makedirs(company_dir, exist_ok=True)
+                except Exception as e:
+                    print(f"Notice creating Desktop company dir ({e}), falling back to projects/resumes", flush=True)
+                    company_dir = os.path.expanduser(f"~/projects/resumes/{target_company}")
+                    os.makedirs(company_dir, exist_ok=True)
+
                 # 1. If LaTeX body provided, save .tex file to company folder + top-level
                 if body and len(body) > 100:
-                    tex_company = os.path.join(company_dir, "Shivamshu_Roy_Resume.tex")
-                    tex_top = os.path.join(DESKTOP_RESUMES_DIR, "Shivamshu_Roy_Resume.tex")
-                    with open(tex_company, "w", encoding="utf-8") as tf:
-                        tf.write(body)
-                    with open(tex_top, "w", encoding="utf-8") as tf:
-                        tf.write(body)
+                    try:
+                        tex_company = os.path.join(company_dir, "Shivamshu_Roy_Resume.tex")
+                        with open(tex_company, "w", encoding="utf-8") as tf:
+                            tf.write(body)
+                        tex_top = os.path.join(DESKTOP_RESUMES_DIR, "Shivamshu_Roy_Resume.tex")
+                        with open(tex_top, "w", encoding="utf-8") as tf:
+                            tf.write(body)
+                    except Exception as e:
+                        print(f"Notice saving local .tex file: {e}", flush=True)
 
                     # Put LaTeX on clipboard
-                    proc = subprocess.Popen(["pbcopy"], stdin=subprocess.PIPE)
-                    proc.communicate(body.encode("utf-8"))
+                    try:
+                        proc = subprocess.Popen(["pbcopy"], stdin=subprocess.PIPE)
+                        proc.communicate(body.encode("utf-8"))
+                    except Exception:
+                        pass
 
                     # Inject LaTeX into Overleaf and recompile using JS injection (no Accessibility needed)
                     inject_latex_and_recompile(body)
 
-                    # Wait 3s for Overleaf to finish recompilation
-                    time.sleep(3)
+                    # Wait 3.5s for Overleaf to finish recompilation
+                    time.sleep(3.5)
 
-                # 2. Trigger download via JS injection
+                # 2. Trigger download via JS navigation
                 initial_pdfs = get_downloads_pdf_set()
                 trigger_overleaf_download()
 
-                # 3. Wait for downloaded PDF and move to Desktop/resumes/<company>/
-                downloaded_file = wait_for_downloaded_pdf(initial_pdfs, timeout_sec=8)
+                # 3. Wait for downloaded PDF and move to company folder
+                downloaded_file = wait_for_downloaded_pdf(initial_pdfs, timeout_sec=12)
                 dest_path = None
                 if downloaded_file:
                     dest_path = process_downloaded_pdf(downloaded_file, target_company=target_company)
@@ -372,10 +382,11 @@ class OverleafSyncHandler(http.server.BaseHTTPRequestHandler):
                     "company": target_company,
                     "folder": company_dir,
                     "filePath": dest_path or os.path.join(company_dir, "Shivamshu_Roy_Resume.pdf"),
-                    "message": f"Pushed to Overleaf & saved to Desktop/resumes/{target_company}/!"
+                    "message": f"Pushed to Overleaf & saved to {company_dir}!"
                 }).encode("utf-8"))
             except Exception as e:
-                self.send_response(500)
+                print(f"Error in /sync: {e}", flush=True)
+                self.send_response(200) # Return 200 with error info so client doesn't choke
                 self._send_cors_headers()
                 self.send_header("Content-Type", "application/json")
                 self.end_headers()
